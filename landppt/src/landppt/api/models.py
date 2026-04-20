@@ -149,6 +149,7 @@ class PPTProject(BaseModel):
     slides_data: Optional[List[Dict[str, Any]]] = None  # Individual slide data
     confirmed_requirements: Optional[Dict[str, Any]] = None  # Confirmed requirements from step 1
     project_metadata: Optional[Dict[str, Any]] = None  # 项目元数据，包括选择的模板ID等
+    presentation_spec: Optional[Dict[str, Any]] = None  # Derived spec stored inside project_metadata
     todo_board: Optional[TodoBoard] = None
     version: int = 1
     versions: List[Dict[str, Any]] = []

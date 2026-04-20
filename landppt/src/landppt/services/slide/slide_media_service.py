@@ -31,6 +31,7 @@ from ..research.enhanced_report_generator import EnhancedReportGenerator
 from ..pyppeteer_pdf_converter import get_pdf_converter
 from ..image.image_service import ImageService
 from ..image.adapters.ppt_prompt_adapter import PPTSlideContext
+from ..presentation import PresentationSpecService
 from ...utils.thread_pool import run_blocking_io, to_thread
 
 
@@ -78,11 +79,18 @@ class SlideMediaService:
                 slide_data['images_summary'] = images_collection.get_summary_for_ai()
                 logger.info(f'为第{page_number}页添加{images_collection.total_count}张图片: 本地{images_collection.local_count}张, 网络{images_collection.network_count}张, AI生成{images_collection.ai_generated_count}张')
             context_info = self._build_slide_context(slide_data, page_number, total_pages)
+            presentation_render_plan = await self._get_presentation_render_plan(project_id, slide_data, page_number)
+            presentation_spec_context = presentation_render_plan.get("prompt_context", "")
+            if presentation_render_plan.get("slide_spec"):
+                slide_data["presentation_spec_slide_spec"] = presentation_render_plan["slide_spec"]
+            if presentation_render_plan.get("render_hints"):
+                slide_data["render_hints"] = presentation_render_plan["render_hints"]
             context = prompts_manager.get_single_slide_html_prompt(
                 slide_data, confirmed_requirements, page_number, total_pages,
                 context_info, style_genes, template_html,
                 global_constitution=global_constitution,
                 current_page_brief=current_page_brief,
+                presentation_spec_context=presentation_spec_context,
             )
             html_content = await self._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries=5)
             return html_content
@@ -91,6 +99,40 @@ class SlideMediaService:
             fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
         repaired_fallback = await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
         return repaired_fallback
+
+    async def _get_presentation_render_plan(
+        self,
+        project_id: Optional[str],
+        slide_data: Dict[str, Any],
+        page_number: int,
+    ) -> Dict[str, Any]:
+        """Load the current slide render plan derived from presentation_spec."""
+        if not project_id:
+            return {}
+
+        try:
+            project = await self.project_manager.get_project(project_id, user_id=self.user_id)
+        except TypeError:
+            project = await self.project_manager.get_project(project_id)
+        except Exception as exc:
+            logger.warning("读取 project presentation_spec 失败: %s", exc)
+            return {}
+
+        if not project:
+            return {}
+
+        presentation_spec = getattr(project, "presentation_spec", None)
+        if not isinstance(presentation_spec, dict):
+            metadata = getattr(project, "project_metadata", None) or {}
+            presentation_spec = metadata.get("presentation_spec") if isinstance(metadata, dict) else None
+        if not isinstance(presentation_spec, dict):
+            return {}
+
+        return PresentationSpecService.resolve_render_plan(
+            presentation_spec=presentation_spec,
+            slide_data=slide_data,
+            page_number=page_number,
+        )
 
     async def _process_slide_image(self, slide_data: Dict[str, Any], confirmed_requirements: Dict[str, Any], page_number: int, total_pages: int, template_html: str=''):
         """使用图片处理器处理幻灯片多图片"""

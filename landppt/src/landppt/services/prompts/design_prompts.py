@@ -696,7 +696,8 @@ class DesignPrompts:
                                    style_genes: str,
                                    template_html: str = "",
                                    global_constitution: str = "",
-                                   current_page_brief: str = "") -> str:
+                                   current_page_brief: str = "",
+                                   presentation_spec_context: str = "") -> str:
         """单页 HTML 生成提示词。"""
         slide_type = slide_data.get("slide_type", "content") if isinstance(slide_data, dict) else "content"
         slide_title = slide_data.get("title", "") if isinstance(slide_data, dict) else ""
@@ -710,6 +711,7 @@ class DesignPrompts:
 
         constitution_block = f"**全局设计规则**\n{global_constitution}" if global_constitution else ""
         brief_block = f"**当前页面指导**\n{current_page_brief}" if current_page_brief else ""
+        spec_block = presentation_spec_context if presentation_spec_context else ""
 
         return f"""为第{page_number}页生成完整 HTML。
 
@@ -743,6 +745,8 @@ class DesignPrompts:
 {constitution_block}
 
 {brief_block}
+
+{spec_block}
 
 {DesignPrompts._build_fixed_canvas_html_guardrails()}
 

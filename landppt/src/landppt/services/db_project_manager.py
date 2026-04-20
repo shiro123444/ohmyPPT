@@ -360,7 +360,7 @@ class DatabaseProjectManager:
         """Save confirmed requirements for a project. If user_id is provided, enforces ownership."""
         db_service = await self._get_db_service()
         try:
-            success = await db_service.project_repo.update(project_id, {
+            success = await db_service.update_project(project_id, {
                 "confirmed_requirements": requirements
             }, user_id=user_id)
 
@@ -393,7 +393,7 @@ class DatabaseProjectManager:
         """Update project metadata. If user_id is provided, enforces ownership."""
         db_service = await self._get_db_service()
         try:
-            success = await db_service.project_repo.update(project_id, {"project_metadata": metadata}, user_id=user_id)
+            success = await db_service.update_project(project_id, {"project_metadata": metadata}, user_id=user_id)
 
             if success:
                 logger.info(f"Updated metadata for project {project_id}")

@@ -6,6 +6,7 @@ import time
 import uuid
 import logging
 from typing import List, Optional, Dict, Any, Tuple
+from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ from ..api.models import (
     PPTGenerationRequest
 )
 from ..auth.request_context import current_user_id, USER_SCOPE_ALL
+from ..services.presentation import PresentationSpecService
 
 
 class DatabaseService:
@@ -203,6 +205,13 @@ class DatabaseService:
             else:
                 project_status = "draft"
 
+        project_metadata = db_project.project_metadata
+        presentation_spec = None
+        if isinstance(project_metadata, dict):
+            stored_spec = project_metadata.get("presentation_spec")
+            if isinstance(stored_spec, dict):
+                presentation_spec = stored_spec
+
         return PPTProject(
             project_id=db_project.project_id,
             title=db_project.title,
@@ -214,13 +223,72 @@ class DatabaseService:
             slides_html=db_project.slides_html,
             slides_data=slides_data,
             confirmed_requirements=db_project.confirmed_requirements,
-            project_metadata=db_project.project_metadata,
+            project_metadata=project_metadata,
+            presentation_spec=presentation_spec,
             todo_board=todo_board,
             version=db_project.version,
             versions=versions,
             created_at=db_project.created_at,
             updated_at=db_project.updated_at
         )
+
+    def _prepare_project_update_with_presentation_spec(
+        self,
+        project: DBProject,
+        update_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        prepared = dict(update_data or {})
+        if not prepared:
+            return prepared
+
+        relevant_keys = {
+            "outline",
+            "project_metadata",
+            "confirmed_requirements",
+            "requirements",
+            "topic",
+            "scenario",
+            "title",
+        }
+        if not (relevant_keys & set(prepared.keys())):
+            return prepared
+
+        outline = prepared.get("outline", project.outline)
+        if not isinstance(outline, dict) or not isinstance(outline.get("slides"), list) or not outline.get("slides"):
+            return prepared
+
+        if "project_metadata" in prepared and isinstance(prepared.get("project_metadata"), dict):
+            project_metadata = dict(prepared["project_metadata"])
+        else:
+            project_metadata = dict(project.project_metadata or {})
+
+        project_view = SimpleNamespace(
+            project_id=project.project_id,
+            title=prepared.get("title", project.title),
+            scenario=prepared.get("scenario", project.scenario),
+            topic=prepared.get("topic", project.topic),
+            requirements=prepared.get("requirements", project.requirements),
+            confirmed_requirements=prepared.get("confirmed_requirements", project.confirmed_requirements),
+            project_metadata=project_metadata,
+            created_at=project.created_at,
+            updated_at=prepared.get("updated_at", time.time()),
+        )
+
+        try:
+            presentation_spec = PresentationSpecService().build_for_project(project_view, outline=outline)
+        except Exception as spec_error:
+            logger.warning(
+                "Failed to refresh presentation_spec for project %s: %s",
+                project.project_id,
+                spec_error,
+            )
+            return prepared
+
+        project_metadata["presentation_spec"] = presentation_spec
+        project_metadata["presentation_spec_version"] = presentation_spec.get("schema_version")
+        project_metadata["presentation_spec_updated_at"] = presentation_spec.get("generated_at")
+        prepared["project_metadata"] = project_metadata
+        return prepared
     
     async def create_project(self, request: PPTGenerationRequest, user_id: Optional[int] = None) -> PPTProject:
         """Create a new project with todo board.
@@ -412,10 +480,9 @@ class DatabaseService:
         """Save project outline"""
         try:
             effective_user_id = current_user_id.get()
-            if effective_user_id is not None:
-                owned = await self.project_repo.get_by_id(project_id, user_id=effective_user_id)
-                if not owned:
-                    return False
+            project = await self.project_repo.get_by_id(project_id, user_id=effective_user_id)
+            if not project:
+                return False
 
             logger.info(f"Saving outline for project {project_id}")
             logger.debug(f"Outline data: {outline}")
@@ -430,6 +497,7 @@ class DatabaseService:
                 "outline": outline,
                 "updated_at": time.time()
             }
+            update_data = self._prepare_project_update_with_presentation_spec(project, update_data)
 
             result = await self.project_repo.update(project_id, update_data)
 
@@ -637,7 +705,11 @@ class DatabaseService:
     async def update_project(self, project_id: str, update_data: Dict[str, Any], user_id: Optional[int] = None) -> bool:
         """Update project data. If user_id is provided, enforces ownership."""
         try:
-            result = await self.project_repo.update(project_id, update_data, user_id=user_id)
+            project = await self.project_repo.get_by_id(project_id, user_id=user_id)
+            if not project:
+                return False
+            prepared_update = self._prepare_project_update_with_presentation_spec(project, update_data)
+            result = await self.project_repo.update(project_id, prepared_update, user_id=user_id)
             return result is not None
         except Exception as e:
             logger.error(f"Failed to update project {project_id}: {e}")

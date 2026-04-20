@@ -1,37 +1,12 @@
-import asyncio
 import base64
-import json
 import logging
-import os
-import re
-import shutil
 import tempfile
-import time
+import urllib.parse
 import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List
 
-from ...api.models import (
-    PPTGenerationRequest,
-    PPTOutline,
-    EnhancedPPTOutline,
-    SlideContent,
-    PPTProject,
-    TodoBoard,
-    FileOutlineGenerationResponse,
-)
-from ...ai import get_ai_provider, get_role_provider, AIMessage, MessageRole
-from ...ai.base import TextContent, ImageContent
-from ...core.config import ai_config, app_config
-from ..runtime.ai_execution import ExecutionContext
-from ..prompts import prompts_manager
-from ..research.enhanced_research_service import EnhancedResearchService
-from ..research.enhanced_report_generator import EnhancedReportGenerator
-from ..pyppeteer_pdf_converter import get_pdf_converter
-from ..image.image_service import ImageService
-from ..image.adapters.ppt_prompt_adapter import PPTSlideContext
-from ...utils.thread_pool import run_blocking_io, to_thread
+from ...api.models import SlideContent
 
 
 logger = logging.getLogger(__name__)
@@ -39,94 +14,571 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from .slide_html_service import SlideHtmlService
 
-class SlideDocumentService:
-    """Extracted logic from SlideHtmlService."""
 
-    def __init__(self, service: 'SlideHtmlService'):
+class SlideDocumentService:
+    """Extracted document/fallback rendering logic for SlideHtmlService."""
+
+    def __init__(self, service: "SlideHtmlService"):
         self._service = service
 
     def __getattr__(self, name: str):
         return getattr(self._service, name)
 
-    def _generate_fallback_slide_html(self, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
-        """Generate fallback HTML for a slide with improved content visibility and special designs for title/thankyou slides"""
-        title = slide_data.get('title', f'第{page_number}页')
-        content_points = slide_data.get('content_points', [])
-        slide_type = slide_data.get('slide_type', 'content')
-        if slide_type == 'title':
-            content_html = f'\n                <div style="\n                    text-align: center;\n                    width: 100%;\n                    aspect-ratio: 16/9;\n                    display: flex;\n                    flex-direction: column;\n                    justify-content: center;\n                    margin: 0 auto;\n                    box-sizing: border-box;\n                    position: relative;\n                    max-width: 1200px;\n                    padding: 3% 5%;\n                    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);\n                    overflow: hidden;\n                ">\n                    <!-- 动态背景装饰 -->\n                    <div style="\n                        position: absolute;\n                        top: -50%;\n                        left: -50%;\n                        width: 200%;\n                        height: 200%;\n                        background: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);\n                        background-size: 50px 50px;\n                        animation: float 20s ease-in-out infinite;\n                        z-index: 1;\n                    "></div>\n\n                    <!-- 光效装饰 -->\n                    <div style="\n                        position: absolute;\n                        top: 20%;\n                        right: 10%;\n                        width: 200px;\n                        height: 200px;\n                        background: radial-gradient(circle, rgba(255,255,255,0.2) 0%, transparent 70%);\n                        border-radius: 50%;\n                        z-index: 1;\n                    "></div>\n\n                    <div style="\n                        position: absolute;\n                        bottom: 30%;\n                        left: 15%;\n                        width: 150px;\n                        height: 150px;\n                        background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 70%);\n                        border-radius: 50%;\n                        z-index: 1;\n                    "></div>\n\n                    <!-- 主要内容 -->\n                    <div style="position: relative; z-index: 2;">\n                        <h1 style="\n                            font-size: clamp(2rem, 5vw, 4rem);\n                            color: #ffffff;\n                            margin-bottom: clamp(30px, 4vh, 50px);\n                            line-height: 1.2;\n                            text-shadow: 0 4px 8px rgba(0,0,0,0.3);\n                            font-weight: 700;\n                            letter-spacing: 1px;\n                            background: linear-gradient(45deg, #ffffff, #f8f9fa);\n                            -webkit-background-clip: text;\n                            -webkit-text-fill-color: transparent;\n                            background-clip: text;\n                        ">{title}</h1>\n\n                        <div style="\n                            width: 80px;\n                            height: 4px;\n                            background: linear-gradient(90deg, #ff6b6b, #4ecdc4, #45b7d1);\n                            margin: 0 auto clamp(20px, 3vh, 30px) auto;\n                            border-radius: 2px;\n                        "></div>\n\n                        <p style="\n                            font-size: clamp(1.2rem, 3vw, 2rem);\n                            color: rgba(255,255,255,0.9);\n                            line-height: 1.4;\n                            font-weight: 300;\n                            text-shadow: 0 2px 4px rgba(0,0,0,0.2);\n                        ">专业演示文稿</p>\n\n                        <!-- 装饰性元素 -->\n                        <div style="\n                            margin-top: clamp(30px, 4vh, 50px);\n                            display: flex;\n                            justify-content: center;\n                            gap: 15px;\n                        ">\n                            <div style="\n                                width: 12px;\n                                height: 12px;\n                                background: rgba(255,255,255,0.6);\n                                border-radius: 50%;\n                                animation: pulse 2s ease-in-out infinite;\n                            "></div>\n                            <div style="\n                                width: 12px;\n                                height: 12px;\n                                background: rgba(255,255,255,0.4);\n                                border-radius: 50%;\n                                animation: pulse 2s ease-in-out infinite 0.5s;\n                            "></div>\n                            <div style="\n                                width: 12px;\n                                height: 12px;\n                                background: rgba(255,255,255,0.6);\n                                border-radius: 50%;\n                                animation: pulse 2s ease-in-out infinite 1s;\n                            "></div>\n                        </div>\n                    </div>\n\n                    <!-- 页码 -->\n                    <div style="\n                        position: absolute;\n                        bottom: 15px;\n                        right: 20px;\n                        color: rgba(255,255,255,0.8);\n                        font-size: clamp(10px, 1.5vw, 14px);\n                        font-weight: 500;\n                        background: rgba(0,0,0,0.2);\n                        padding: 6px 12px;\n                        border-radius: 20px;\n                        backdrop-filter: blur(10px);\n                        z-index: 3;\n                    ">\n                        第{page_number}页 / 共{total_pages}页\n                    </div>\n\n                    <style>\n                        @keyframes float {{\n                            0%, 100% {{ transform: translateY(0px) rotate(0deg); }}\n                            50% {{ transform: translateY(-20px) rotate(180deg); }}\n                        }}\n                        @keyframes pulse {{\n                            0%, 100% {{ opacity: 0.6; transform: scale(1); }}\n                            50% {{ opacity: 1; transform: scale(1.2); }}\n                        }}\n                    </style>\n                </div>\n                '
-        elif slide_type in ['thankyou', 'conclusion']:
-            content_html = f'\n                <div style="\n                    text-align: center;\n                    width: 100%;\n                    aspect-ratio: 16/9;\n                    display: flex;\n                    flex-direction: column;\n                    justify-content: center;\n                    margin: 0 auto;\n                    box-sizing: border-box;\n                    position: relative;\n                    max-width: 1200px;\n                    padding: 3% 5%;\n                    background: linear-gradient(135deg, #2c3e50 0%, #3498db 50%, #9b59b6 100%);\n                    overflow: hidden;\n                ">\n                    <!-- 星空背景效果 -->\n                    <div style="\n                        position: absolute;\n                        top: 0;\n                        left: 0;\n                        width: 100%;\n                        height: 100%;\n                        background-image:\n                            radial-gradient(2px 2px at 20px 30px, rgba(255,255,255,0.8), transparent),\n                            radial-gradient(2px 2px at 40px 70px, rgba(255,255,255,0.6), transparent),\n                            radial-gradient(1px 1px at 90px 40px, rgba(255,255,255,0.9), transparent),\n                            radial-gradient(1px 1px at 130px 80px, rgba(255,255,255,0.7), transparent),\n                            radial-gradient(2px 2px at 160px 30px, rgba(255,255,255,0.8), transparent);\n                        background-repeat: repeat;\n                        background-size: 200px 100px;\n                        animation: sparkle 3s ease-in-out infinite;\n                        z-index: 1;\n                    "></div>\n\n                    <!-- 光圈装饰 -->\n                    <div style="\n                        position: absolute;\n                        top: 50%;\n                        left: 50%;\n                        transform: translate(-50%, -50%);\n                        width: 300px;\n                        height: 300px;\n                        border: 2px solid rgba(255,255,255,0.2);\n                        border-radius: 50%;\n                        animation: rotate 10s linear infinite;\n                        z-index: 1;\n                    "></div>\n\n                    <div style="\n                        position: absolute;\n                        top: 50%;\n                        left: 50%;\n                        transform: translate(-50%, -50%);\n                        width: 200px;\n                        height: 200px;\n                        border: 1px solid rgba(255,255,255,0.3);\n                        border-radius: 50%;\n                        animation: rotate 8s linear infinite reverse;\n                        z-index: 1;\n                    "></div>\n\n                    <!-- 主要内容 -->\n                    <div style="position: relative; z-index: 2;">\n                        <h1 style="\n                            font-size: clamp(2.5rem, 6vw, 4.5rem);\n                            color: #ffffff;\n                            margin-bottom: clamp(20px, 3vh, 30px);\n                            line-height: 1.2;\n                            text-shadow: 0 4px 12px rgba(0,0,0,0.4);\n                            font-weight: 700;\n                            letter-spacing: 2px;\n                            background: linear-gradient(45deg, #ffffff, #f39c12, #e74c3c);\n                            -webkit-background-clip: text;\n                            -webkit-text-fill-color: transparent;\n                            background-clip: text;\n                            animation: glow 2s ease-in-out infinite alternate;\n                        ">{title}</h1>\n\n                        <!-- 装饰性分割线 -->\n                        <div style="\n                            display: flex;\n                            justify-content: center;\n                            align-items: center;\n                            margin: clamp(20px, 3vh, 30px) 0;\n                        ">\n                            <div style="\n                                width: 50px;\n                                height: 2px;\n                                background: linear-gradient(90deg, transparent, #ffffff, transparent);\n                            "></div>\n                            <div style="\n                                width: 20px;\n                                height: 20px;\n                                background: radial-gradient(circle, #ffffff 30%, transparent 30%);\n                                margin: 0 15px;\n                                border-radius: 50%;\n                            "></div>\n                            <div style="\n                                width: 50px;\n                                height: 2px;\n                                background: linear-gradient(90deg, transparent, #ffffff, transparent);\n                            "></div>\n                        </div>\n\n                        <p style="\n                            font-size: clamp(1.2rem, 3vw, 1.8rem);\n                            color: rgba(255,255,255,0.9);\n                            line-height: 1.4;\n                            font-weight: 300;\n                            text-shadow: 0 2px 4px rgba(0,0,0,0.3);\n                            margin-bottom: clamp(30px, 4vh, 40px);\n                        ">感谢您的聆听</p>\n\n                        <!-- 内容要点（如果有） -->'
-            if content_points:
-                content_html += '\n                        <div style="\n                            margin-top: clamp(20px, 3vh, 30px);\n                            text-align: left;\n                            max-width: 600px;\n                            margin-left: auto;\n                            margin-right: auto;\n                        ">'
-                for point in content_points[:3]:
-                    content_html += f'\n                            <div style="\n                                background: rgba(255,255,255,0.1);\n                                padding: 12px 20px;\n                                margin: 10px 0;\n                                border-radius: 25px;\n                                border-left: 4px solid #f39c12;\n                                color: rgba(255,255,255,0.9);\n                                font-size: clamp(0.9rem, 2vw, 1.2rem);\n                                backdrop-filter: blur(5px);\n                            ">{point}</div>'
-                content_html += '\n                        </div>'
-            content_html += '\n\n                        <!-- 结尾装饰 -->\n                        <div style="\n                            margin-top: clamp(30px, 4vh, 40px);\n                            display: flex;\n                            justify-content: center;\n                            gap: 20px;\n                        ">\n                            <div style="\n                                width: 8px;\n                                height: 8px;\n                                background: #e74c3c;\n                                border-radius: 50%;\n                                animation: bounce 1.5s ease-in-out infinite;\n                            "></div>\n                            <div style="\n                                width: 8px;\n                                height: 8px;\n                                background: #f39c12;\n                                border-radius: 50%;\n                                animation: bounce 1.5s ease-in-out infinite 0.3s;\n                            "></div>\n                            <div style="\n                                width: 8px;\n                                height: 8px;\n                                background: #27ae60;\n                                border-radius: 50%;\n                                animation: bounce 1.5s ease-in-out infinite 0.6s;\n                            "></div>\n                            <div style="\n                                width: 8px;\n                                height: 8px;\n                                background: #3498db;\n                                border-radius: 50%;\n                                animation: bounce 1.5s ease-in-out infinite 0.9s;\n                            "></div>\n                        </div>\n                    </div>\n\n                    <!-- 页码 -->\n                    <div style="\n                        position: absolute;\n                        bottom: 15px;\n                        right: 20px;\n                        color: rgba(255,255,255,0.8);\n                        font-size: clamp(10px, 1.5vw, 14px);\n                        font-weight: 500;\n                        background: rgba(0,0,0,0.2);\n                        padding: 6px 12px;\n                        border-radius: 20px;\n                        backdrop-filter: blur(10px);\n                        z-index: 3;\n                    ">\n                        第{page_number}页 / 共{total_pages}页\n                    </div>\n\n                    <style>\n                        @keyframes sparkle {{\n                            0%, 100% {{ opacity: 0.8; }}\n                            50% {{ opacity: 1; }}\n                        }}\n                        @keyframes rotate {{\n                            from {{ transform: translate(-50%, -50%) rotate(0deg); }}\n                            to {{ transform: translate(-50%, -50%) rotate(360deg); }}\n                        }}\n                        @keyframes glow {{\n                            0% {{ text-shadow: 0 4px 12px rgba(0,0,0,0.4); }}\n                            100% {{ text-shadow: 0 4px 20px rgba(255,255,255,0.3), 0 0 30px rgba(255,255,255,0.2); }}\n                        }}\n                        @keyframes bounce {{\n                            0%, 100% {{ transform: translateY(0); }}\n                            50% {{ transform: translateY(-10px); }}\n                        }}\n                    </style>\n                </div>\n                '
+    @staticmethod
+    def _get_render_hints(slide_data: Dict[str, Any]) -> Dict[str, Any]:
+        hints = slide_data.get("render_hints")
+        return dict(hints) if isinstance(hints, dict) else {}
+
+    @staticmethod
+    def _build_page_number_html(page_number: int, total_pages: int, dark: bool = False) -> str:
+        color = "rgba(255,255,255,0.8)" if dark else "#95a5a6"
+        background = "rgba(0,0,0,0.2)" if dark else "rgba(255,255,255,0.8)"
+        return (
+            f'<div style="position: absolute; bottom: 15px; right: 20px; color: {color}; '
+            f'font-size: clamp(10px, 1.5vw, 14px); font-weight: 500; background: {background}; '
+            'padding: 6px 12px; border-radius: 20px; z-index: 10;">'
+            f'第{page_number}页 / 共{total_pages}页</div>'
+        )
+
+    @staticmethod
+    def _render_content_points(content_points: List[str], item_style: str) -> str:
+        return "".join(
+            f"<li style=\"{item_style}\">{point}</li>"
+            for point in content_points
+        )
+
+    def _generate_title_fallback(self, title: str, page_number: int, total_pages: int) -> str:
+        return f"""
+                <div data-render-variant="cover-hero" data-layout-family="cover" style="
+                    text-align: center;
+                    width: 100%;
+                    aspect-ratio: 16/9;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    margin: 0 auto;
+                    box-sizing: border-box;
+                    position: relative;
+                    max-width: 1200px;
+                    padding: 3% 5%;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+                    overflow: hidden;
+                ">
+                    <div style="
+                        position: absolute;
+                        top: -50%;
+                        left: -50%;
+                        width: 200%;
+                        height: 200%;
+                        background: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);
+                        background-size: 50px 50px;
+                        animation: float 20s ease-in-out infinite;
+                        z-index: 1;
+                    "></div>
+                    <div style="
+                        position: absolute;
+                        top: 20%;
+                        right: 10%;
+                        width: 200px;
+                        height: 200px;
+                        background: radial-gradient(circle, rgba(255,255,255,0.2) 0%, transparent 70%);
+                        border-radius: 50%;
+                        z-index: 1;
+                    "></div>
+                    <div style="
+                        position: absolute;
+                        bottom: 30%;
+                        left: 15%;
+                        width: 150px;
+                        height: 150px;
+                        background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 70%);
+                        border-radius: 50%;
+                        z-index: 1;
+                    "></div>
+                    <div style="position: relative; z-index: 2;">
+                        <h1 style="
+                            font-size: clamp(2rem, 5vw, 4rem);
+                            color: #ffffff;
+                            margin-bottom: clamp(30px, 4vh, 50px);
+                            line-height: 1.2;
+                            text-shadow: 0 4px 8px rgba(0,0,0,0.3);
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            background: linear-gradient(45deg, #ffffff, #f8f9fa);
+                            -webkit-background-clip: text;
+                            -webkit-text-fill-color: transparent;
+                            background-clip: text;
+                        ">{title}</h1>
+                        <div style="
+                            width: 80px;
+                            height: 4px;
+                            background: linear-gradient(90deg, #ff6b6b, #4ecdc4, #45b7d1);
+                            margin: 0 auto clamp(20px, 3vh, 30px) auto;
+                            border-radius: 2px;
+                        "></div>
+                        <p style="
+                            font-size: clamp(1.2rem, 3vw, 2rem);
+                            color: rgba(255,255,255,0.9);
+                            line-height: 1.4;
+                            font-weight: 300;
+                            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                        ">专业演示文稿</p>
+                    </div>
+                    {self._build_page_number_html(page_number, total_pages, dark=True)}
+                    <style>
+                        @keyframes float {{
+                            0%, 100% {{ transform: translateY(0px) rotate(0deg); }}
+                            50% {{ transform: translateY(-20px) rotate(180deg); }}
+                        }}
+                    </style>
+                </div>
+                """
+
+    def _generate_closing_fallback(
+        self,
+        title: str,
+        page_number: int,
+        total_pages: int,
+        render_hints: Dict[str, Any],
+    ) -> str:
+        page_number_html = ""
+        if render_hints.get("show_page_number", True):
+            page_number_html = self._build_page_number_html(page_number, total_pages, dark=True)
+
+        return f"""
+                <div data-render-variant="{render_hints.get('fallback_variant', 'closing-statement')}" data-layout-family="{render_hints.get('layout_family', 'closing')}" style="
+                    text-align: center;
+                    width: 100%;
+                    aspect-ratio: 16/9;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    margin: 0 auto;
+                    box-sizing: border-box;
+                    position: relative;
+                    max-width: 1200px;
+                    padding: 3% 5%;
+                    background: linear-gradient(135deg, #2c3e50 0%, #3498db 50%, #9b59b6 100%);
+                    overflow: hidden;
+                ">
+                    <div style="
+                        position: absolute;
+                        inset: 0;
+                        background-image:
+                            radial-gradient(2px 2px at 20px 30px, rgba(255,255,255,0.8), transparent),
+                            radial-gradient(2px 2px at 40px 70px, rgba(255,255,255,0.6), transparent),
+                            radial-gradient(1px 1px at 90px 40px, rgba(255,255,255,0.9), transparent);
+                        background-repeat: repeat;
+                        background-size: 200px 100px;
+                        animation: sparkle 3s ease-in-out infinite;
+                        z-index: 1;
+                    "></div>
+                    <div style="position: relative; z-index: 2;">
+                        <h1 style="
+                            font-size: clamp(2.5rem, 6vw, 4.5rem);
+                            color: #ffffff;
+                            margin-bottom: clamp(20px, 3vh, 30px);
+                            line-height: 1.2;
+                            text-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                            font-weight: 700;
+                            letter-spacing: 2px;
+                            background: linear-gradient(45deg, #ffffff, #f39c12, #e74c3c);
+                            -webkit-background-clip: text;
+                            -webkit-text-fill-color: transparent;
+                            background-clip: text;
+                        ">{title}</h1>
+                        <p style="
+                            font-size: clamp(1.2rem, 3vw, 1.8rem);
+                            color: rgba(255,255,255,0.9);
+                            line-height: 1.4;
+                            font-weight: 300;
+                            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                            margin-bottom: clamp(30px, 4vh, 40px);
+                        ">感谢您的聆听</p>
+                    </div>
+                    {page_number_html}
+                    <style>
+                        @keyframes sparkle {{
+                            0%, 100% {{ opacity: 0.8; }}
+                            50% {{ opacity: 1; }}
+                        }}
+                    </style>
+                </div>
+                """
+
+    def _generate_agenda_fallback(
+        self,
+        title: str,
+        content_points: List[str],
+        page_number: int,
+        total_pages: int,
+        render_hints: Dict[str, Any],
+    ) -> str:
+        cards_html = "".join(
+            (
+                '<div style="background: rgba(255,255,255,0.88); border: 1px solid rgba(52,152,219,0.18); '
+                'border-radius: 18px; padding: 20px 22px; min-height: 110px; display: flex; flex-direction: column; '
+                'justify-content: space-between; box-shadow: 0 18px 40px rgba(31, 78, 121, 0.08);">'
+                f'<div style="font-size: 0.82rem; font-weight: 700; letter-spacing: 0.14em; color: #2980b9;">{idx:02d}</div>'
+                f'<div style="font-size: clamp(1rem, 2vw, 1.25rem); line-height: 1.45; color: #1f2d3d; font-weight: 600;">{point}</div>'
+                '</div>'
+            )
+            for idx, point in enumerate(content_points, start=1)
+        )
+
+        page_number_html = ""
+        if render_hints.get("show_page_number", False):
+            page_number_html = self._build_page_number_html(page_number, total_pages)
+
+        return f"""
+                <div data-render-variant="{render_hints.get('fallback_variant', 'toc-grid')}" data-layout-family="{render_hints.get('layout_family', 'toc')}" style="
+                    padding: 3% 5%;
+                    width: 100%;
+                    aspect-ratio: 16/9;
+                    box-sizing: border-box;
+                    margin: 0 auto;
+                    position: relative;
+                    max-width: 1200px;
+                    background: linear-gradient(160deg, #f7fbff 0%, #eef6ff 100%);
+                    overflow: hidden;
+                ">
+                    <div style="position: absolute; inset: 0; background:
+                        radial-gradient(circle at top right, rgba(52,152,219,0.12), transparent 32%),
+                        radial-gradient(circle at bottom left, rgba(26,188,156,0.10), transparent 28%);
+                    "></div>
+                    <div style="position: relative; z-index: 1;">
+                        <div style="font-size: 0.9rem; letter-spacing: 0.18em; font-weight: 700; color: #2980b9; margin-bottom: 12px;">SECTION MAP</div>
+                        <h1 style="font-size: clamp(1.7rem, 4vw, 3rem); color: #12324a; margin: 0 0 26px 0; line-height: 1.18;">{title}</h1>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px;">
+                            {cards_html}
+                        </div>
+                    </div>
+                    {page_number_html}
+                </div>
+                """
+
+    def _generate_content_fallback(
+        self,
+        title: str,
+        content_points: List[str],
+        page_number: int,
+        total_pages: int,
+        render_hints: Dict[str, Any],
+    ) -> str:
+        variant = render_hints.get("fallback_variant", "balanced-bullets")
+        page_number_html = ""
+        if render_hints.get("show_page_number", True):
+            page_number_html = self._build_page_number_html(page_number, total_pages)
+
+        if variant == "data-spotlight":
+            lead = content_points[0] if content_points else "核心指标"
+            cards_html = "".join(
+                f'<div style="padding: 16px 18px; border-radius: 16px; background: #ffffff; border: 1px solid rgba(52,152,219,0.16); box-shadow: 0 14px 30px rgba(15,76,129,0.08); font-size: clamp(0.92rem, 1.8vw, 1.05rem); line-height: 1.45; color: #26435d;">{point}</div>'
+                for point in (content_points[1:] or content_points[:1])
+            )
+            body_html = f"""
+                    <div style="display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr); gap: 24px; align-items: stretch; min-height: 70%;">
+                        <div style="padding: 24px 26px; border-radius: 24px; background: linear-gradient(135deg, #12324a, #2d6b96); color: white; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 24px 60px rgba(17, 50, 74, 0.22);">
+                            <div style="font-size: 0.82rem; letter-spacing: 0.16em; font-weight: 700; opacity: 0.75;">DATA SPOTLIGHT</div>
+                            <div style="font-size: clamp(1.35rem, 3vw, 2rem); line-height: 1.3; font-weight: 700;">{lead}</div>
+                            <div style="font-size: 0.95rem; opacity: 0.8;">图表类型：{render_hints.get('chart_type') or 'custom'}</div>
+                        </div>
+                        <div style="display: grid; gap: 14px;">{cards_html}</div>
+                    </div>
+            """
+        elif variant == "dense-two-column":
+            points_html = "".join(
+                f'<div style="break-inside: avoid; margin-bottom: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.78); border: 1px solid rgba(52,152,219,0.14); font-size: clamp(0.88rem, 1.7vw, 1rem); line-height: 1.45;">{point}</div>'
+                for point in content_points
+            )
+            body_html = f'<div style="column-count: 2; column-gap: 22px; padding-right: 10px;">{points_html}</div>'
         else:
-            points_html = ''
-            if content_points:
-                points_html = "<div style='max-height: 60vh; overflow-y: auto; padding-right: 10px;'><ul style='font-size: clamp(0.9rem, 2.5vw, 1.4rem); line-height: 1.5; margin: 0; padding-left: 1.5em;'>"
-                for point in content_points:
-                    points_html += f"<li style='margin-bottom: 0.8em; word-wrap: break-word;'>{point}</li>"
-                points_html += '</ul></div>'
-            content_html = f'\n                <div style="padding: 3% 5%; width: 100%; aspect-ratio: 16/9; box-sizing: border-box; margin: 0 auto; position: relative; max-width: 1200px; display: flex; flex-direction: column;">\n                    <h1 style="font-size: clamp(1.5rem, 4vw, 3rem); color: #2c3e50; margin-bottom: clamp(15px, 2vh, 25px); border-bottom: 3px solid #3498db; padding-bottom: 10px; line-height: 1.2; flex-shrink: 0;">{title}</h1>\n                    <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">\n                        {points_html}\n                    </div>\n                    <div style="position: absolute; bottom: 15px; right: 20px; color: #95a5a6; font-size: clamp(10px, 1.5vw, 14px); font-weight: 500; background: rgba(255,255,255,0.8); padding: 4px 8px; border-radius: 4px; z-index: 10;">\n                        第{page_number}页 / 共{total_pages}页\n                    </div>\n                </div>\n                '
-        return f"""\n    <!DOCTYPE html>\n    <html lang="zh-CN" style="height: 100%; display: flex; align-items: center; justify-content: center;">\n    <head>\n        <meta charset="UTF-8">\n        <meta name="viewport" content="width=device-width, initial-scale=1.0">\n        <title>{title}</title>\n        <style>\n            body {{\n                margin: 0;\n                padding: 0;\n                font-family: 'Microsoft YaHei', Arial, sans-serif;\n                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n                color: #2c3e50;\n                width: 1280px;\n                height: 720px;\n                position: relative;\n                overflow: hidden;\n            }}\n        </style>\n    </head>\n    <body>\n        {content_html}\n    </body>\n    </html>\n            """
+            font_size = "clamp(1rem, 2vw, 1.2rem)" if variant == "spacious-bullets" else "clamp(0.92rem, 1.9vw, 1.08rem)"
+            spacing = "1.05em" if variant == "spacious-bullets" else "0.78em"
+            points_html = self._render_content_points(
+                content_points=content_points,
+                item_style=f"margin-bottom: {spacing}; word-wrap: break-word;",
+            )
+            body_html = f"<div style='max-height: 60vh; overflow-y: auto; padding-right: 10px;'><ul style='font-size: {font_size}; line-height: 1.5; margin: 0; padding-left: 1.5em;'>{points_html}</ul></div>"
+
+        return f"""
+                <div data-render-variant="{variant}" data-layout-family="{render_hints.get('layout_family', 'content')}" style="
+                    padding: 3% 5%;
+                    width: 100%;
+                    aspect-ratio: 16/9;
+                    box-sizing: border-box;
+                    margin: 0 auto;
+                    position: relative;
+                    max-width: 1200px;
+                    display: flex;
+                    flex-direction: column;
+                    background: linear-gradient(180deg, #fbfdff 0%, #f4f8fc 100%);
+                ">
+                    <h1 style="font-size: clamp(1.5rem, 4vw, 3rem); color: #2c3e50; margin-bottom: clamp(15px, 2vh, 25px); border-bottom: 3px solid #3498db; padding-bottom: 10px; line-height: 1.2; flex-shrink: 0;">{title}</h1>
+                    <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                        {body_html}
+                    </div>
+                    {page_number_html}
+                </div>
+                """
+
+    def _generate_fallback_slide_html(self, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
+        """Generate fallback HTML with render-hint aware variants."""
+        title = slide_data.get("title", f"第{page_number}页")
+        content_points = slide_data.get("content_points", [])
+        slide_type = slide_data.get("slide_type", "content")
+        render_hints = self._get_render_hints(slide_data)
+
+        if slide_type == "title":
+            content_html = self._generate_title_fallback(title, page_number, total_pages)
+        elif slide_type in {"thankyou", "conclusion"}:
+            content_html = self._generate_closing_fallback(title, page_number, total_pages, render_hints)
+        elif slide_type == "agenda" or render_hints.get("layout_family") == "toc":
+            content_html = self._generate_agenda_fallback(title, content_points, page_number, total_pages, render_hints)
+        else:
+            content_html = self._generate_content_fallback(title, content_points, page_number, total_pages, render_hints)
+
+        return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN" style="height: 100%; display: flex; align-items: center; justify-content: center;">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: #2c3e50;
+                width: 1280px;
+                height: 720px;
+                position: relative;
+                overflow: hidden;
+            }}
+        </style>
+    </head>
+    <body>
+        {content_html}
+    </body>
+    </html>
+            """
 
     def _combine_slides_to_full_html(self, slides_data: List[Dict[str, Any]], title: str) -> str:
-        """Combine individual slides into a full presentation HTML and save to temp files"""
+        """Combine individual slides into a full presentation HTML and save to temp files."""
         try:
             if not slides_data:
-                logger.warning('No slides data provided for combining')
+                logger.warning("No slides data provided for combining")
                 return self._generate_empty_presentation_html(title)
             if not title:
-                title = '未命名演示'
-            presentation_id = f'presentation_{uuid.uuid4().hex[:8]}'
-            temp_dir = Path(tempfile.gettempdir()) / 'landppt' / presentation_id
+                title = "未命名演示"
+
+            presentation_id = f"presentation_{uuid.uuid4().hex[:8]}"
+            temp_dir = Path(tempfile.gettempdir()) / "landppt" / presentation_id
             temp_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f'Combining {len(slides_data)} slides into full HTML presentation')
-            slide_files = []
+            logger.info("Combining %s slides into full HTML presentation", len(slides_data))
+
             for i, slide in enumerate(slides_data):
-                page_number = slide.get('page_number', i + 1)
-                slide_filename = f'slide_{page_number}.html'
+                page_number = slide.get("page_number", i + 1)
+                slide_filename = f"slide_{page_number}.html"
                 slide_path = temp_dir / slide_filename
-                html_content = slide.get('html_content', '<div>空内容</div>')
-                with open(slide_path, 'w', encoding='utf-8') as f:
+                html_content = slide.get("html_content", "<div>空内容</div>")
+                with open(slide_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
-                relative_path = f'{presentation_id}/{slide_filename}'
-                slide_files.append({'page_number': page_number, 'filename': slide_filename, 'relative_path': relative_path})
-            slides_html = ''
+
+            slides_html = ""
             for i, slide in enumerate(slides_data):
-                page_number = slide.get('page_number', i + 1)
-                html_content = slide.get('html_content', '<div>空内容</div>')
+                page_number = slide.get("page_number", i + 1)
+                html_content = slide.get("html_content", "<div>空内容</div>")
                 encoded_html = self._encode_html_to_base64(html_content)
-                data_url = f'data:text/html;charset=utf-8;base64,{encoded_html}'
-                slides_html += f'''\n                    <div class="slide" id="slide-{page_number}" style="display: {('block' if i == 0 else 'none')};">\n                        <iframe src="{data_url}"\n                                style="width: 100%; height: 100%; border: none;"></iframe>\n                    </div>\n                    '''
-            return f"""\n    <!DOCTYPE html>\n    <html lang="zh-CN">\n    <head>\n        <meta charset="UTF-8">\n        <meta name="viewport" content="width=device-width, initial-scale=1.0">\n        <title>{title}</title>\n        <style>\n            body {{\n                margin: 0;\n                padding: 0;\n                font-family: 'Microsoft YaHei', Arial, sans-serif;\n                background: #000;\n            }}\n            .slide {{\n                width: 100%;\n                max-width: 1200px;\n                aspect-ratio: 16/9;\n                position: relative;\n                margin: 0 auto;\n            }}\n            .navigation {{\n                position: fixed;\n                bottom: 20px;\n                left: 50%;\n                transform: translateX(-50%);\n                z-index: 1000;\n                background: rgba(0,0,0,0.7);\n                padding: 10px 20px;\n                border-radius: 25px;\n            }}\n            .nav-btn {{\n                background: #3498db;\n                color: white;\n                border: none;\n                padding: 8px 15px;\n                margin: 0 5px;\n                border-radius: 5px;\n                cursor: pointer;\n            }}\n            .nav-btn:hover {{\n                background: #2980b9;\n            }}\n            .nav-btn:disabled {{\n                background: #95a5a6;\n                cursor: not-allowed;\n            }}\n            .slide-counter {{\n                color: white;\n                margin: 0 15px;\n            }}\n        </style>\n    </head>\n    <body>\n        {slides_html}\n\n        <div class="navigation">\n            <button class="nav-btn" onclick="previousSlide()">⬅️ 上一页</button>\n            <span class="slide-counter" id="slideCounter">1 / {len(slides_data)}</span>\n            <button class="nav-btn" onclick="nextSlide()">下一页 ➡️</button>\n        </div>\n\n        <script>\n            let currentSlide = 0;\n            const totalSlides = {len(slides_data)};\n\n            // No need for initialization - iframes already have src set to file paths\n\n            function showSlide(index) {{\n                document.querySelectorAll('.slide').forEach(slide => slide.style.display = 'none');\n                const targetSlide = document.getElementById('slide-' + (index + 1));\n                if (targetSlide) {{\n                    targetSlide.style.display = 'block';\n                }}\n                document.getElementById('slideCounter').textContent = (index + 1) + ' / ' + totalSlides;\n            }}\n\n            function nextSlide() {{\n                if (currentSlide < totalSlides - 1) {{\n                    currentSlide++;\n                    showSlide(currentSlide);\n                }}\n            }}\n\n            function previousSlide() {{\n                if (currentSlide > 0) {{\n                    currentSlide--;\n                    showSlide(currentSlide);\n                }}\n            }}\n\n            // Keyboard navigation\n            document.addEventListener('keydown', function(e) {{\n                if (e.key === 'ArrowRight') nextSlide();\n                if (e.key === 'ArrowLeft') previousSlide();\n            }});\n\n            // Initialize when page loads\n            document.addEventListener('DOMContentLoaded', function() {{\n                showSlide(0);\n            }});\n        </script>\n    </body>\n    </html>\n                """
+                data_url = f"data:text/html;charset=utf-8;base64,{encoded_html}"
+                slides_html += (
+                    f'\n<div class="slide" id="slide-{page_number}" style="display: {"block" if i == 0 else "none"};">'
+                    f'\n    <iframe src="{data_url}" style="width: 100%; height: 100%; border: none;"></iframe>'
+                    "\n</div>\n"
+                )
+
+            return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                background: #000;
+            }}
+            .slide {{
+                width: 100%;
+                max-width: 1200px;
+                aspect-ratio: 16/9;
+                position: relative;
+                margin: 0 auto;
+            }}
+            .navigation {{
+                position: fixed;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 1000;
+                background: rgba(0,0,0,0.7);
+                padding: 10px 20px;
+                border-radius: 25px;
+            }}
+            .nav-btn {{
+                background: #3498db;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                margin: 0 5px;
+                border-radius: 5px;
+                cursor: pointer;
+            }}
+            .nav-btn:hover {{
+                background: #2980b9;
+            }}
+            .nav-btn:disabled {{
+                background: #95a5a6;
+                cursor: not-allowed;
+            }}
+            .slide-counter {{
+                color: white;
+                margin: 0 15px;
+            }}
+        </style>
+    </head>
+    <body>
+        {slides_html}
+
+        <div class="navigation">
+            <button class="nav-btn" onclick="previousSlide()">⬅️ 上一页</button>
+            <span class="slide-counter" id="slideCounter">1 / {len(slides_data)}</span>
+            <button class="nav-btn" onclick="nextSlide()">下一页 ➡️</button>
+        </div>
+
+        <script>
+            let currentSlide = 0;
+            const totalSlides = {len(slides_data)};
+
+            function showSlide(index) {{
+                document.querySelectorAll('.slide').forEach(slide => slide.style.display = 'none');
+                const targetSlide = document.getElementById('slide-' + (index + 1));
+                if (targetSlide) {{
+                    targetSlide.style.display = 'block';
+                }}
+                document.getElementById('slideCounter').textContent = (index + 1) + ' / ' + totalSlides;
+            }}
+
+            function nextSlide() {{
+                if (currentSlide < totalSlides - 1) {{
+                    currentSlide++;
+                    showSlide(currentSlide);
+                }}
+            }}
+
+            function previousSlide() {{
+                if (currentSlide > 0) {{
+                    currentSlide--;
+                    showSlide(currentSlide);
+                }}
+            }}
+
+            document.addEventListener('keydown', function(e) {{
+                if (e.key === 'ArrowRight') nextSlide();
+                if (e.key === 'ArrowLeft') previousSlide();
+            }});
+
+            document.addEventListener('DOMContentLoaded', function() {{
+                showSlide(0);
+            }});
+        </script>
+    </body>
+    </html>
+                """
         except Exception as e:
-            logger.error(f'Error combining slides to full HTML: {e}')
+            logger.error("Error combining slides to full HTML: %s", e)
             import traceback
             traceback.print_exc()
             return self._generate_empty_presentation_html(title)
 
     def _generate_empty_presentation_html(self, title: str) -> str:
-        """Generate empty presentation HTML as fallback"""
-        return f"""\n    <!DOCTYPE html>\n    <html lang="zh-CN">\n    <head>\n        <meta charset="UTF-8">\n        <meta name="viewport" content="width=device-width, initial-scale=1.0">\n        <title>{title}</title>\n        <style>\n            body {{\n                margin: 0;\n                padding: 0;\n                font-family: 'Microsoft YaHei', Arial, sans-serif;\n                background: #f0f0f0;\n                display: flex;\n                justify-content: center;\n                align-items: center;\n                height: 100vh;\n            }}\n            .empty-message {{\n                text-align: center;\n                color: #666;\n                font-size: 24px;\n            }}\n        </style>\n    </head>\n    <body>\n        <div class="empty-message">\n            <h1>暂无幻灯片内容</h1>\n            <p>请先生成幻灯片内容</p>\n        </div>\n    </body>\n    </html>\n            """
+        """Generate empty presentation HTML as fallback."""
+        return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                background: #f0f0f0;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+            }}
+            .empty-message {{
+                text-align: center;
+                color: #666;
+                font-size: 24px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="empty-message">
+            <h1>暂无幻灯片内容</h1>
+            <p>请先生成幻灯片内容</p>
+        </div>
+    </body>
+    </html>
+            """
 
     def _encode_html_for_iframe(self, html_content: str) -> str:
-        """Encode HTML content for iframe src"""
-        import urllib.parse
+        """Encode HTML content for iframe src."""
         return urllib.parse.quote(html_content)
 
     def _encode_html_to_base64(self, html_content: str) -> str:
-        """Encode HTML content to base64 for safe JavaScript transmission"""
-        import base64
-        return base64.b64encode(html_content.encode('utf-8')).decode('ascii')
+        """Encode HTML content to base64 for safe JavaScript transmission."""
+        return base64.b64encode(html_content.encode("utf-8")).decode("ascii")
 
     def _generate_basic_html(self, slides: List[SlideContent], theme_config: Dict[str, Any]) -> str:
-        """Generate basic HTML as fallback"""
-        html_parts = ['<!DOCTYPE html>', '<html>', '<head>', '<title>PPT Presentation</title>', '<style>', 'body { margin: 0; padding: 0; font-family: ' + theme_config.get('font_family', 'Arial, sans-serif') + '; }', '.presentation-container { width: 1280px; height: 720px; margin: 0 auto; position: relative; }', '.slide { width: 1280px; height: 720px; background: ' + theme_config.get('background', '#f0f0f0') + '; padding: 40px; box-sizing: border-box; position: relative; }', '.title { color: ' + theme_config.get('primary_color', '#333') + '; font-size: 2em; margin-bottom: 20px; }', '.content { color: ' + theme_config.get('secondary_color', '#666') + '; font-size: 1.2em; line-height: 1.6; }', '.page-number { position: absolute; bottom: 20px; right: 20px; color: #999; font-size: 0.9em; }', '@media (max-width: 1280px) { .presentation-container, .slide { width: 100vw; height: 56.25vw; max-height: 100vh; } }', '</style>', '</head>', '<body>', "<div class='presentation-container'>"]
+        """Generate basic HTML as fallback."""
+        html_parts = [
+            "<!DOCTYPE html>",
+            "<html>",
+            "<head>",
+            "<title>PPT Presentation</title>",
+            "<style>",
+            "body { margin: 0; padding: 0; font-family: " + theme_config.get("font_family", "Arial, sans-serif") + "; }",
+            ".presentation-container { width: 1280px; height: 720px; margin: 0 auto; position: relative; }",
+            ".slide { width: 1280px; height: 720px; background: " + theme_config.get("background", "#f0f0f0") + "; padding: 40px; box-sizing: border-box; position: relative; }",
+            ".title { color: " + theme_config.get("primary_color", "#333") + "; font-size: 2em; margin-bottom: 20px; }",
+            ".content { color: " + theme_config.get("secondary_color", "#666") + "; font-size: 1.2em; line-height: 1.6; }",
+            ".page-number { position: absolute; bottom: 20px; right: 20px; color: #999; font-size: 0.9em; }",
+            "@media (max-width: 1280px) { .presentation-container, .slide { width: 100vw; height: 56.25vw; max-height: 100vh; } }",
+            "</style>",
+            "</head>",
+            "<body>",
+            "<div class='presentation-container'>",
+        ]
         for i, slide in enumerate(slides):
-            html_parts.extend([f"<div class='slide' id='slide-{i + 1}'>", f"<h1 class='title'>{slide.title}</h1>", f"<div class='content'>{slide.content or ''}</div>", f"<div class='page-number'>{i + 1}</div>", '</div>'])
-        html_parts.extend(['</div>', '</body>', '</html>'])
-        return '\n'.join(html_parts)
+            html_parts.extend(
+                [
+                    f"<div class='slide' id='slide-{i + 1}'>",
+                    f"<h1 class='title'>{slide.title}</h1>",
+                    f"<div class='content'>{slide.content or ''}</div>",
+                    f"<div class='page-number'>{i + 1}</div>",
+                    "</div>",
+                ]
+            )
+        html_parts.extend(["</div>", "</body>", "</html>"])
+        return "\n".join(html_parts)
