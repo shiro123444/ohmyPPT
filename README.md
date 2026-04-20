@@ -388,9 +388,18 @@ skill 中要求主题对象必须使用固定键：
     - `image_policy`
     - `chart_policy`
     注入当前页生成提示词
+  - 当前已覆盖：
+    - 默认单页 prompt 路径
+    - 选中全局母版后的模板生成路径
   - 接入点：
     - `landppt/src/landppt/services/slide/slide_media_service.py`
+    - `landppt/src/landppt/services/slide/creative_design_service.py`
     - `landppt/src/landppt/services/prompts/design_prompts.py`
+- 已让 `theme_spec.design_tokens` 同时保留：
+  - `outline.theme_config`
+  - `outline.metadata.theme_config`
+  这样上层主题 token 不会在构建 `presentation_spec` 时被静默丢失
+  - 位置：`landppt/src/landppt/services/presentation/presentation_spec_service.py`
 - 已新增 `slide_spec -> render_hints` 解释层
   - 用于把中间层约束统一解释成更接近 renderer 的信号
   - 当前已覆盖：

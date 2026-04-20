@@ -313,10 +313,12 @@ class PresentationSpecService:
         if not isinstance(slides, list) or not slides:
             raise ValueError("outline.slides must be a non-empty list")
         metadata = self._safe_dict(outline.get("metadata"))
+        theme_config = self._safe_dict(outline.get("theme_config"))
         return {
             "title": str(outline.get("title") or "PPT大纲").strip() or "PPT大纲",
             "slides": slides,
             "metadata": metadata,
+            "theme_config": theme_config,
         }
 
     def _build_deck_meta(self, project: Any, outline: Dict[str, Any], metadata: Dict[str, Any]) -> DeckMetaSpec:

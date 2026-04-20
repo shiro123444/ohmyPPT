@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..prompts import prompts_manager
+from ..presentation import PresentationSpecService
 
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,13 @@ class CreativeDesignService:
         if not project_id:
             project_id = confirmed_requirements.get("project_id")
 
+        presentation_render_plan = await self._get_presentation_render_plan(project_id, slide_data, page_number)
+        presentation_spec_context = presentation_render_plan.get("prompt_context", "")
+        if presentation_render_plan.get("slide_spec"):
+            slide_data["presentation_spec_slide_spec"] = presentation_render_plan["slide_spec"]
+        if presentation_render_plan.get("render_hints"):
+            slide_data["render_hints"] = presentation_render_plan["render_hints"]
+
         await self._ensure_slide_images_context(
             slide_data,
             confirmed_requirements,
@@ -217,6 +225,41 @@ class CreativeDesignService:
             project_style=confirmed_requirements.get("ppt_style", "general"),
             global_constitution=global_constitution,
             current_page_brief=current_page_brief,
+            presentation_spec_context=presentation_spec_context,
+        )
+
+    async def _get_presentation_render_plan(
+        self,
+        project_id: Optional[str],
+        slide_data: Dict[str, Any],
+        page_number: int,
+    ) -> Dict[str, Any]:
+        """Load the current slide render plan derived from presentation_spec."""
+        if not project_id:
+            return {}
+
+        try:
+            project = await self.project_manager.get_project(project_id, user_id=self.user_id)
+        except TypeError:
+            project = await self.project_manager.get_project(project_id)
+        except Exception as exc:
+            logger.warning("读取 project presentation_spec 失败: %s", exc)
+            return {}
+
+        if not project:
+            return {}
+
+        presentation_spec = getattr(project, "presentation_spec", None)
+        if not isinstance(presentation_spec, dict):
+            metadata = getattr(project, "project_metadata", None) or {}
+            presentation_spec = metadata.get("presentation_spec") if isinstance(metadata, dict) else None
+        if not isinstance(presentation_spec, dict):
+            return {}
+
+        return PresentationSpecService.resolve_render_plan(
+            presentation_spec=presentation_spec,
+            slide_data=slide_data,
+            page_number=page_number,
         )
 
     async def _extract_style_genes(self, template_html: str) -> str:

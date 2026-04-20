@@ -63,11 +63,35 @@ def test_presentation_spec_service_builds_phase1_spec():
     assert spec["theme_spec"]["selected_template_id"] == 7
     assert spec["render_target"]["primary"] == "html"
     assert spec["render_target"]["pptx_compilation_ready"] is False
+    assert spec["theme_spec"]["design_tokens"]["primary"] == "#111111"
     assert len(spec["slide_specs"]) == 3
     assert spec["slide_specs"][0]["visual_priority"] == "opening"
     assert spec["slide_specs"][1]["chart_policy"]["needs_chart"] is True
     assert spec["slide_specs"][1]["image_policy"]["source_preferences"] == ["local", "network", "ai_generated"]
     assert spec["outline_spec"]["slide_order"] == ["slide-01", "slide-02", "slide-03"]
+
+
+def test_presentation_spec_service_preserves_top_level_theme_config():
+    service = PresentationSpecService()
+    project = SimpleNamespace(
+        project_id="project-theme",
+        title="AI 战略汇报 - general",
+        topic="AI 战略汇报",
+        scenario="general",
+        requirements="更偏董事会风格",
+        project_metadata={"network_mode": True, "language": "zh"},
+        confirmed_requirements={"ppt_style": "conference"},
+        created_at=100.0,
+        updated_at=120.0,
+    )
+    outline = _sample_outline()
+    outline["theme_config"] = {"surface": "paper", "primary": "#222222"}
+
+    spec = service.build_for_project(project, outline)
+
+    assert spec["theme_spec"]["design_tokens"]["surface"] == "paper"
+    assert spec["theme_spec"]["design_tokens"]["primary"] == "#111111"
+    assert spec["theme_spec"]["design_tokens"]["accent"] == "#ff6600"
 
 
 def test_presentation_spec_service_resolves_render_plan():
@@ -175,7 +199,7 @@ class _FakeProjectRepo:
         assert project_id == self.project.project_id
         return self.project
 
-    async def update(self, project_id, update_data):
+    async def update(self, project_id, update_data, user_id=None):
         assert project_id == self.project.project_id
         self.updated_payload = dict(update_data)
         for key, value in update_data.items():

@@ -619,7 +619,8 @@ class DesignPrompts:
                                            project_type: str = "", project_audience: str = "",
                                            project_style: str = "",
                                            global_constitution: str = "",
-                                           current_page_brief: str = "") -> str:
+                                           current_page_brief: str = "",
+                                           presentation_spec_context: str = "") -> str:
         """创意模板上下文 HTML 生成提示词。"""
         template_context = DesignPrompts._build_template_html_context(template_html)
         locked_zones = DesignPrompts._build_locked_zones_context(
@@ -632,6 +633,7 @@ class DesignPrompts:
         # 条件性地加入指导上下文
         constitution_block = f"**全局设计规则**\n{global_constitution}" if global_constitution else ""
         brief_block = f"**当前页面指导**\n{current_page_brief}" if current_page_brief else ""
+        spec_block = presentation_spec_context if presentation_spec_context else ""
 
         return f"""为第{page_number}页生成完整 PPT HTML。
 
@@ -671,6 +673,8 @@ class DesignPrompts:
 {constitution_block}
 
 {brief_block}
+
+{spec_block}
 
 {DesignPrompts._build_fixed_canvas_html_guardrails()}
 
